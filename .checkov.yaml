@@ -1,0 +1,8 @@
+# Deliberate exceptions that cannot be expressed inline (the resource lives in a
+# remote module). Each one is justified here and reviewed like code.
+skip-check:
+  # The apply role needs to create IAM roles, security groups, databases... for
+  # the whole platform. It can only be assumed from the dev/prod GitHub
+  # environments, which require a reviewer (see bootstrap/main.tf). Narrowing it to
+  # a custom policy with a permissions boundary is the next hardening step.
+  - CKV_AWS_274

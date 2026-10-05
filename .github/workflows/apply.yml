@@ -1,0 +1,40 @@
+name: Apply
+
+# Manual and gated: the job runs in a GitHub Environment (dev/prod) whose
+# protection rules require a reviewer, and assumes a role that only trusts
+# that environment (see bootstrap/). Not used in this portfolio: nothing is applied.
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to apply
+        type: choice
+        options: [dev, prod]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: apply-${{ inputs.environment }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.14.7
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_APPLY_ROLE_ARN }}
+          aws-region: eu-west-1
+      - name: terraform apply
+        working-directory: environments/${{ inputs.environment }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -out=tfplan
+          terraform apply -input=false tfplan

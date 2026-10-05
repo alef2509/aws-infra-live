@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: 1.14.7
+
+jobs:
+  validate:
+    name: Validate (${{ matrix.dir }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dir: [environments/dev, environments/prod, bootstrap]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform validate (no backend, no credentials)
+        working-directory: ${{ matrix.dir }}
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+  lint:
+    name: Format, lint, security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - name: terraform fmt
+        run: terraform fmt -check -recursive
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+      - name: tflint
+        run: |
+          tflint --init
+          tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" -f compact
+      # Checkov cannot fetch git modules pinned to a commit SHA, so the pinned
+      # revision is cloned into its module cache first; module internals get scanned too.
+      - name: Fetch pinned modules for Checkov
+        run: |
+          sha=$(grep -rhoE 'terraform-aws-modules.git//modules/[a-z-]+\?ref=[0-9a-f]{40}' --include=*.tf modules bootstrap | head -1 | sed -E 's/.*ref=//')
+          dir=.external_modules/github.com/alef2509/terraform-aws-modules/$sha
+          git clone -q https://github.com/alef2509/terraform-aws-modules.git "$dir"
+          git -C "$dir" checkout -q "$sha"
+      - uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          framework: terraform
+          download_external_modules: true
+          config_file: .checkov.yaml
+          quiet: true
+          compact: true
+
+  # Runs only once the bootstrap roles exist and AWS_PLAN_ROLE_ARN is configured.
+  # Keyless: GitHub's OIDC token is exchanged for short-lived, read-only credentials.
+  plan:
+    name: Plan (${{ matrix.environment }})
+    if: github.event_name == 'pull_request' && vars.AWS_PLAN_ROLE_ARN != ''
+    needs: [validate, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [dev, prod]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: eu-west-1
+      - name: terraform plan
+        working-directory: environments/${{ matrix.environment }}
+        run: |
+          terraform init -input=false
+          terraform plan -input=false -no-color -out=tfplan | tee plan.txt
+          {
+            echo "### Plan: ${{ matrix.environment }}"
+            echo '```'
+            grep -E '^(Plan:|No changes)' plan.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
