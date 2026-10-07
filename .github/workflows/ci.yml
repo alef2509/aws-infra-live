@@ -44,6 +44,8 @@ jobs:
         with:
           tflint_version: v0.64.0
       - name: tflint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}  # avoids GitHub API rate limits when downloading plugins
         run: |
           tflint --init
           tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" -f compact
